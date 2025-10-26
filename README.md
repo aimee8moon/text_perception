@@ -1,2 +1,2 @@
 # text_perception
-draft version 
+draft version with help of ChatGPT and classmate
