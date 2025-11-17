@@ -1,0 +1,1196 @@
+import http.requests.*; // handles HTTP POST requests
+import java.awt.Toolkit;
+import java.awt.datatransfer.DataFlavor;
+
+// Global declarations
+ArrayList uiComponents;
+UIComponent currentOrb; // Polymorphic reference
+InputField input;
+ArrayList chat;
+ChatStorage storage;
+String apiKey;
+
+String endpoint = "https://api.openai.com/v1/chat/completions";
+boolean isWaitingForResponse = false;
+
+RadarChart radar;
+// ========================================
+// ABSTRACTION: Abstract Base Classes
+// ========================================
+
+// === Abstract UIComponent Base Class ===
+abstract class UIComponent {
+  float x, y;
+  boolean visible;
+
+  UIComponent(float x, float y) {
+    this.x = x;
+    this.y = y;
+    this.visible = true;
+  }
+
+  // Abstract methods - must be implemented by children
+  abstract void display();
+  abstract void update();
+
+  // Concrete method - shared by all components
+  void setVisible(boolean v) {
+    this.visible = v;
+  }
+
+  boolean isVisible() {
+    return visible;
+  }
+
+  void moveTo(float newX, float newY) {
+    this.x = newX;
+    this.y = newY;
+  }
+}
+// ========================================
+// INHERITANCE: Orb Classes
+// ========================================
+
+// === Base Orb Class (extends UIComponent) ===
+class Orb extends UIComponent {
+  float r, angle, speed;
+  color[] glowColors;
+
+  // OVERLOADING: Multiple constructors
+  Orb(float x, float y, float r) {
+    super(x, y);
+    this.r = r;
+    this.angle = random(TWO_PI);
+    this.speed = 0.01;
+    this.glowColors = new color[2];
+    this.glowColors[0] = color(170, 200, 255);
+    this.glowColors[1] = color(200, 220, 255);
+  }
+
+  // Overloaded constructor with custom colors
+  Orb(float x, float y, float r, color[] colors) {
+    this(x, y, r);
+    this.glowColors = colors;
+  }
+
+  // Overloaded constructor with speed
+  Orb(float x, float y, float r, float speed) {
+    this(x, y, r);
+    this.speed = speed;
+  }
+
+  // OVERRIDING: Override abstract method from UIComponent
+  void update() {
+    if (!visible) return;
+    angle += speed;
+  }
+
+  // OVERRIDING: Override abstract method from UIComponent
+  void display() {
+    if (!visible) return;
+    float dx = sin(angle) * 20;
+    float dy = cos(angle) * 10;
+    float alpha = 150 + 50 * sin(angle * 2);
+    noStroke();
+
+    for (int i = 0; i < 6; i++) {
+      float rr = r * (1.0 - i * 0.15);
+      color baseColor = lerpColor(glowColors[0], glowColors[1], i / 6.0);
+      fill(red(baseColor), green(baseColor), blue(baseColor), alpha - i * 25);
+      ellipse(x + dx, y + dy, rr, rr);
+    }
+  }
+
+  // OVERLOADING: Multiple versions of setSpeed
+  void setSpeed(float speed) {
+    this.speed = speed;
+  }
+
+  void setSpeed(float speed, float newAngle) {
+    this.speed = speed;
+    this.angle = newAngle;
+  }
+
+  void setSpeed(float speed, float newAngle, boolean randomize) {
+    this.speed = speed;
+    this.angle = randomize ? random(TWO_PI) : newAngle;
+  }
+}
+// === PulsingOrb (INHERITANCE + OVERRIDING) ===
+class PulsingOrb extends Orb {
+  float pulseSpeed;
+  float minRadius, maxRadius;
+  float originalRadius;
+
+  PulsingOrb(float x, float y, float r) {
+    super(x, y, r);
+    this.originalRadius = r;
+    this.pulseSpeed = 0.05;
+    this.minRadius = r * 0.7;
+    this.maxRadius = r * 1.3;
+    this.glowColors = new color[2];
+    this.glowColors[0] = color(255, 150, 200);
+    this.glowColors[1] = color(200, 150, 255);
+  }
+
+  // OVERRIDING: Enhance parent's update method
+  void update() {
+    super.update(); // Call parent's update
+    r = lerp(minRadius, maxRadius, (sin(angle * 3) + 1) / 2.0);
+  }
+
+  // Additional method specific to PulsingOrb
+  void setPulseSpeed(float speed) {
+    this.pulseSpeed = speed;
+  }
+}
+// === ThinkingOrb (INHERITANCE + OVERRIDING) ===
+class ThinkingOrb extends Orb {
+  float[] dotAngles;
+  float dotRadius;
+
+  ThinkingOrb(float x, float y, float r) {
+    super(x, y, r, 0.08); // Faster speed
+    dotAngles = new float[3];
+    for (int i = 0; i < 3; i++) {
+      dotAngles[i] = i * TWO_PI / 3;
+    }
+    dotRadius = 15;
+    this.glowColors = new color[2];
+    this.glowColors[0] = color(100, 200, 255);
+    this.glowColors[1] = color(150, 220, 255);
+  }
+
+  // OVERRIDING: Add animated dots around orb
+  void display() {
+    super.display(); // Draw base orb first
+
+    // Draw animated thinking dots
+    noStroke();
+    for (int i = 0; i < 3; i++) {
+      float dotX = x + cos(angle + dotAngles[i]) * (r * 0.6);
+      float dotY = y + sin(angle + dotAngles[i]) * (r * 0.6);
+      float pulse = (sin(angle * 2 + i) + 1) / 2.0;
+      fill(100, 150, 255, 150 + pulse * 105);
+      ellipse(dotX, dotY, dotRadius * (0.7 + pulse * 0.3), dotRadius * (0.7 + pulse * 0.3));
+    }
+  }
+}
+// ========================================
+// ABSTRACTION + INHERITANCE: Message Classes
+// ========================================
+
+// === Abstract Message Base Class ===
+abstract class Message {
+  String text;
+  boolean fromUser;
+
+  Message(String text, boolean fromUser) {
+    this.text = text;
+    this.fromUser = fromUser;
+  }
+
+  // Abstract method - each message type renders differently
+  abstract float render(float x, float y, float maxWidth);
+
+  // Common functionality
+
+  // For storage
+  String getType() {
+    // Will be overridden in subclasses
+    return "Message";
+  }
+}
+
+// === TextMessage (INHERITANCE) ===
+class TextMessage extends Message {
+
+  TextMessage(String text, boolean fromUser) {
+    super(text, fromUser);
+  }
+
+  // OVERRIDING: Implement abstract render method
+  float render(float x, float y, float maxWidth) {
+    textSize(16);
+    float padding = 30;
+    float innerWidth = maxWidth - 2 * padding;
+    float lineH = textAscent() + textDescent() + 5;
+
+    // === Robust line wrapping ===
+    ArrayList<String> lines = new ArrayList<String>();
+    String currentLine = "";
+
+    for (int i = 0; i < text.length(); i++) {
+      currentLine += text.charAt(i);
+      if (textWidth(currentLine) > innerWidth || text.charAt(i) == '\n') {
+        if (text.charAt(i) == '\n') {
+          currentLine = trim(currentLine.substring(0, currentLine.length() - 1));
+        } else {
+          currentLine = trim(currentLine.substring(0, currentLine.length() - 1));
+        }
+        lines.add(currentLine);
+        currentLine = "";
+      }
+    }
+    if (!currentLine.equals("")) lines.add(currentLine);
+
+    // === Bubble dimensions ===
+    float boxH = lines.size() * lineH + 2 * padding;
+
+    float boxW = 0;
+    for (String line : lines) {
+      boxW = max(boxW, textWidth(line));
+    }
+    boxW = constrain(boxW + 2 * padding, 100, maxWidth);
+
+    // === Position ===
+    float posX = (fromUser ? width / 2 - 70 : x) + 100;
+    float posY = y - 200;
+
+    // === Draw bubble ===
+    fill(fromUser ? color(230, 240, 255) : color(255, 255, 255));
+    stroke(200);
+    strokeWeight(1);
+    rect(posX, posY, boxW, boxH, 12);
+
+    // === Draw text ===
+    fill(50);
+    noStroke();
+    textAlign(LEFT, TOP);
+    float textY = posY + padding;
+    for (String line : lines) {
+      text(line, posX + padding, textY);
+      textY += lineH;
+    }
+
+    return boxH + 10;
+  }
+
+  String getType() {
+    return "TextMessage";
+  }
+}
+
+
+// === VisualMessage (Radar Chart Only) ===
+class VisualMessage extends Message {
+  String[] metrics;
+  float[] values;
+
+  VisualMessage(String[] metrics, float[] values) {
+    super("", false);  // No text, AI-side
+    this.metrics = metrics;
+    this.values = values;
+  }
+
+  float render(float x, float y, float maxWidth) {
+    float padding = 25;
+    float bubbleWidth = maxWidth * 1.2;
+    float bubbleHeight = 260; // total area for chart
+    float posX = width/2 - bubbleWidth/2 - 95; // center bubble
+    float posY = y - 190; // stack position (adjust as needed)
+
+    // === Draw message bubble background ===
+    noStroke();
+    fill(255, 255, 255, 240);
+    rect(posX, posY, bubbleWidth, bubbleHeight, 14);
+
+    // === Draw subtle outline like other chat bubbles ===
+    stroke(200);
+    noFill();
+    rect(posX, posY, bubbleWidth, bubbleHeight, 14);
+
+    // === Draw radar chart inside bubble ===
+    float chartX = posX + bubbleWidth / 2;
+    float chartY = posY + bubbleHeight / 2 + 10;
+    float chartSize = 180;
+
+    RadarChart chart = new RadarChart(chartX, chartY, chartSize, metrics, values);
+    chart.display();
+
+    return bubbleHeight + 20; // spacing for next message
+  }
+
+  String getType() {
+    return "VisualMessage";
+  }
+}
+
+
+// === SystemMessage (INHERITANCE + OVERRIDING) ===
+class SystemMessage extends Message {
+
+  SystemMessage(String text) {
+    super(text, false);
+  }
+
+  // OVERRIDING: Different rendering style
+  float render(float x, float y, float maxWidth) {
+    fill(120, 120, 150);
+    textAlign(CENTER);
+    textSize(13);
+    noStroke();
+    text(text, width/2, y + 15);
+
+    // Draw decorative line
+    stroke(150, 150, 180, 100);
+    strokeWeight(1);
+    line(width/2 - 100, y + 25, width/2 + 100, y + 25);
+
+    return 40;
+  }
+
+  String getType() {
+    return "SystemMessage";
+  }
+}
+
+// === ErrorMessage (INHERITANCE + OVERRIDING) ===
+class ErrorMessage extends Message {
+
+  ErrorMessage(String text) {
+    super(text, false);
+  }
+
+  // OVERRIDING: Error-specific rendering
+  float render(float x, float y, float maxWidth) {
+    textSize(15);
+    float padding = 15;
+    float boxW = min(textWidth(text) + 2 * padding, maxWidth);
+    float boxH = 50;
+    float posX = width/2 - boxW/2;
+
+    // Draw error bubble
+    fill(255, 220, 220);
+    stroke(255, 100, 100);
+    strokeWeight(2);
+    rect(posX, y, boxW, boxH, 12);
+
+    // Draw warning symbol
+    fill(200, 0, 0);
+    textAlign(CENTER);
+    textSize(20);
+    text("!", posX + 20, y + boxH/2 + 7);
+
+    // Draw error text
+    textSize(14);
+    text(text, width/2, y + boxH/2 + 5);
+
+    return boxH + 10;
+  }
+
+  String getType() {
+    return "ErrorMessage";
+  }
+}
+// ========================================
+// FILE PROCESSING (Browser-based storage)
+// ========================================
+
+// === ChatStorage for LocalStorage Operations ===
+class ChatStorage {
+  String storageKey;
+
+  ChatStorage() {
+    this.storageKey = "processingChatHistory";
+  }
+
+  // === SAVE METHODS ===
+  void saveChat(ArrayList<Message> messages) {
+    saveChat(messages, storageKey);
+  }
+
+  void saveChat(ArrayList<Message> messages, String key) {
+    JSONArray jsonArr = new JSONArray();
+
+    for (Message msg : messages) {
+      JSONObject obj = new JSONObject();
+      obj.setString("type", msg.getType());
+      obj.setBoolean("fromUser", msg.fromUser);
+      obj.setString("text", escapeJson(msg.text));
+
+      // --- Save chart data if VisualMessage ---
+      if (msg instanceof VisualMessage) {
+        VisualMessage vm = (VisualMessage) msg;
+
+        JSONArray metricsArr = new JSONArray();
+        JSONArray valuesArr = new JSONArray();
+
+        for (int i = 0; i < vm.metrics.length; i++) {
+          metricsArr.append(vm.metrics[i]);
+          valuesArr.append(vm.values[i]);
+        }
+
+        obj.setJSONArray("metrics", metricsArr);
+        obj.setJSONArray("values", valuesArr);
+      }
+
+      jsonArr.append(obj);
+    }
+
+    try {
+      PrintWriter output = createWriter(key + ".json");
+      output.print(jsonArr.toString());
+      output.flush();
+      output.close();
+      println("Chat saved: " + messages.size() + " messages");
+    } catch (Exception e) {
+      println("Error saving chat: " + e);
+    }
+  }
+
+  // === LOAD METHODS ===
+  ArrayList<Message> loadChat() {
+    return loadChat(storageKey);
+  }
+
+  ArrayList<Message> loadChat(String key) {
+    ArrayList<Message> messages = new ArrayList<Message>();
+
+    try {
+      String[] lines = loadStrings(key + ".json");
+      if (lines == null || lines.length == 0) {
+        println("No saved chat found");
+        return messages;
+      }
+
+      String jsonStr = join(lines, "");
+      JSONArray jsonArr = parseJSONArray(jsonStr);
+      if (jsonArr == null) {
+        println("Error: Could not parse JSON");
+        return messages;
+      }
+
+      for (int i = 0; i < jsonArr.size(); i++) {
+        JSONObject msgObj = jsonArr.getJSONObject(i);
+        String type = msgObj.getString("type");
+        boolean fromUser = msgObj.getBoolean("fromUser");
+        String text = msgObj.getString("text");
+
+        Message msg = null;
+
+        if (type.equals("TextMessage")) {
+          msg = new TextMessage(text, fromUser);
+
+        } else if (type.equals("SystemMessage")) {
+          msg = new SystemMessage(text);
+
+        } else if (type.equals("ErrorMessage")) {
+          msg = new ErrorMessage(text);
+
+        } else if (type.equals("VisualMessage")) {
+          JSONArray metricsArr = msgObj.getJSONArray("metrics");
+          JSONArray valuesArr = msgObj.getJSONArray("values");
+
+          String[] metrics = new String[metricsArr.size()];
+          float[] values = new float[valuesArr.size()];
+
+          for (int j = 0; j < metricsArr.size(); j++) {
+            metrics[j] = metricsArr.getString(j);
+            values[j] = valuesArr.getFloat(j);
+          }
+
+          msg = new VisualMessage(metrics, values);
+        }
+
+        if (msg != null) messages.add(msg);
+      }
+
+      println("Chat loaded: " + messages.size() + " messages");
+
+    } catch (Exception e) {
+      println("Error loading chat: " + e);
+    }
+
+    return messages;
+  }
+
+  // === JSON ESCAPE HELPER ===
+  String escapeJson(String str) {
+    str = str.replace("\\", "\\\\");
+    str = str.replace("\"", "\\\"");
+    str = str.replace("\n", "\\n");
+    str = str.replace("\r", "\\r");
+    str = str.replace("\t", "\\t");
+    return str;
+  }
+
+  // === EXPORT CHAT AS TEXT ===
+  void exportAsText(ArrayList<Message> messages) {
+    String output = "============================================================\n";
+    output += "Chat Export - " + getDateTimeString() + "\n";
+    output += "============================================================\n\n";
+
+    for (Message msg : messages) {
+      String speaker = msg.fromUser ? "YOU" : "AI ";
+      output += "[" + speaker + ": " + msg.text + "\n";
+    }
+
+    output += "\n============================================================\n";
+    output += "Total messages: " + messages.size() + "\n";
+
+    // Save to file in sketch folder
+    try {
+      String fileName = "ChatExport_" + getDateTimeString().replace(":", "-") + ".txt";
+      PrintWriter outputFile = createWriter(fileName);
+      outputFile.print(output);
+      outputFile.flush();
+      outputFile.close();
+      println("Chat exported to " + fileName);
+    } catch (Exception e) {
+      println("Error exporting chat: " + e);
+    }
+  }
+
+  // === DATETIME HELPER ===
+  String getDateTimeString() {
+    return year() + "-" + nf(month(), 2) + "-" + nf(day(), 2) + " " +
+           nf(hour(), 2) + ":" + nf(minute(), 2) + ":" + nf(second(), 2);
+  }
+}
+
+
+// ========================================
+// INPUT FIELD CLASS
+// ========================================
+
+class InputField {
+  float x, y, w, h;
+  String placeholder;
+  String value;
+  boolean focused;
+  int caret;
+  int lastBlink;
+  boolean caretOn;
+  float diameter;
+  float gap;
+
+  InputField(float x, float y, float w, float h){
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    this.placeholder = "Type your message...";
+    this.value = "";
+    this.focused = false;
+    this.caret = 0;
+    this.lastBlink = 0;
+    this.caretOn = true;
+    this.diameter = 46;
+    this.gap = 10;
+  }
+
+void display() {
+  textSize(16);
+  textAlign(LEFT, TOP);
+  float padding = 14;
+  float lineH = textAscent() + textDescent() + 5;
+  float maxTextW = w - 2 * padding;
+
+  // === Wrap text per character ===
+  ArrayList<String> lines = new ArrayList<String>();
+  String currentLine = "";
+
+  for (int i = 0; i < value.length(); i++) {
+    currentLine += value.charAt(i);
+    if (textWidth(currentLine) > maxTextW) {
+      // break before overflow
+      lines.add(trim(currentLine.substring(0, currentLine.length() - 1)));
+      currentLine = "" + value.charAt(i);
+    }
+  }
+  if (!currentLine.equals("")) lines.add(currentLine);
+
+  // === Dynamic height ===
+  h = max(50, padding * 2 + lines.size() * lineH);
+
+  // === Draw background ===
+  noStroke();
+  fill(255, 255, 255, 230);
+  rect(x, y - (h - 50), w, h, 14); // grows upward to stay bottom-fixed
+
+  // === Caret blinking ===
+  if (millis() - lastBlink > 600) {
+    caretOn = !caretOn;
+    lastBlink = millis();
+  }
+
+  // === Text display ===
+  fill(0, 0, 0, 220);
+  float startY = y - (h - 50) + padding;
+  if (value.length() == 0 && !focused) {
+    fill(0, 0, 0, 120);
+    text(placeholder, x + padding, startY);
+  } else {
+    for (int i = 0; i < lines.size(); i++) {
+      text(lines.get(i), x + padding, startY + i * lineH);
+    }
+  }
+
+  // === Caret ===
+  if (focused && caretOn) {
+    String before = value.substring(0, caret);
+    // Determine caret line and offset
+    float cx = x + padding;
+    float cy = startY;
+    String temp = "";
+    for (int i = 0; i < before.length(); i++) {
+      temp += before.charAt(i);
+      if (textWidth(temp) > maxTextW) {
+        cy += lineH;
+        temp = "" + before.charAt(i);
+      }
+    }
+    cx += textWidth(temp);
+    stroke(70, 100, 140);
+    line(cx, cy, cx, cy + lineH - 4);
+  }
+
+  // === Buttons ===
+  float baseX = x + w + 20;
+  float cy = y + 25;
+  drawRoundBtn(baseX + 2 * gap, cy, diameter, color(168, 199, 216), "^", "Send");
+  drawRoundBtn(baseX + diameter + 3 * gap, cy, diameter, color(232, 167, 188), "x", "Clear");
+  drawRoundBtn(baseX + 2 * diameter + 4 * gap, cy, diameter, color(184, 232, 160), "S", "Save");
+  drawRoundBtn(baseX + 3 * diameter + 5 * gap, cy, diameter, color(255, 214, 138), "L", "Load");
+}
+
+
+  void drawRoundBtn(float cx, float cy, float diam, color bg, String label, String tooltip){
+    noStroke();
+    fill(bg);
+    ellipse(cx, cy, diam, diam);
+
+    fill(255);
+    textAlign(CENTER, CENTER);
+    textSize(18);
+    text(label, cx, cy);
+
+    // Tooltip on hover
+    if (dist(mouseX, mouseY, cx, cy) <= diam/2.0) {
+      fill(50);
+      textSize(11);
+      text(tooltip, cx, cy + diam/2 + 15);
+    }
+  }
+
+  void mouseClicked(){
+    focused = (mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h);
+    if (focused) {
+      caret = value.length();
+      caretOn = true;
+      lastBlink = millis();
+    }
+
+    float baseX = x + w + 20;
+    if (dist(mouseX, mouseY, baseX, y + h/2) <= diameter/2.0) commit();
+    if (dist(mouseX, mouseY, baseX + diameter + gap, y + h/2) <= diameter/2.0) clearAll();
+    if (dist(mouseX, mouseY, baseX + 2*diameter + 2*gap, y + h/2) <= diameter/2.0) saveChat();
+    if (dist(mouseX, mouseY, baseX + 3*diameter + 3*gap, y + h/2) <= diameter/2.0) loadChatUI();
+  }
+
+  void keyTyped(){
+    if (!focused) return;
+    if (key >= 32 && key != CODED){
+      insert(str(key));
+    }
+  }
+
+  void keyPressed(){
+    if (!focused) return;
+
+    if (key == BACKSPACE || keyCode == BACKSPACE || keyCode == 8){
+      if (caret > 0){
+        value = value.substring(0, caret-1) + value.substring(caret);
+        caret--;
+      }
+      return;
+    }
+
+    if (keyCode == DELETE){
+      if (caret < value.length()){
+        value = value.substring(0, caret) + value.substring(caret+1);
+      }
+      return;
+    }
+
+    if (keyCode == ENTER || keyCode == RETURN){
+      commit();
+      return;
+    }
+
+    if (key == CODED){
+      if (keyCode == LEFT) caret = max(0, caret - 1);
+      else if (keyCode == RIGHT) caret = min(value.length(), caret + 1);
+    }
+    
+    // === Handle Ctrl+V paste ===
+  if ((key == 'v' || key == 'V') && (keyEvent.isControlDown() || keyEvent.isMetaDown())) {
+    try {
+      String clip = (String) Toolkit.getDefaultToolkit()
+                     .getSystemClipboard()
+                     .getData(DataFlavor.stringFlavor);
+      if (clip != null) {
+        insert(clip);
+      }
+    } catch (Exception e) {
+      println("Clipboard paste failed: " + e);
+    }
+    return;
+  }
+  }
+
+  void insert(String s){
+    value = value.substring(0, caret) + s + value.substring(caret);
+    caret += s.length();
+  }
+
+  void clear(){
+    value = "";
+    caret = 0;
+  }
+
+  void commit(){
+    String message = value.trim();
+    if (message.length() == 0) return;
+
+    // Handle special commands
+    if (message.startsWith("/")) {
+      handleCommand(message);
+      clear();
+      return;
+    }
+
+    chat.add(new TextMessage(message, true));
+
+    // POLYMORPHISM: Switch to thinking orb
+    switchOrb("thinking");
+    String prompt =
+      "Analyze the emotional and symbolic structure of the following text. " +
+      "Return your response ONLY as valid JSON, with the exact keys: 'summary', 'metrics', and 'values'. " +
+      "'summary' must be a single concise paragraph (1–2 sentences) describing the text’s emotional and symbolic characteristics. " +
+      "'metrics' must be an array containing these dimensions in this order: " +
+      "[\"Symbolism\", \"Cognitive Reflection\", \"Emotional Weight\", \"Tone Ambiguity\", \"Inner Dialog\", \"Healing/Acceptance\", \"Spiritual Metaphor\"]. " +
+      "'values' must be an array of floating-point numbers (0.0–1.0) representing the intensity or presence of each corresponding metric in the same order. " +
+      "Do not include any formatting, or markdown. " +
+      "Respond with JSON only. " +
+      "Text to analyze: " + message + "";
+
+
+    // Simulate API response (replace with actual API call)
+    //String response = "This is a defaut response. This is a defaut response. This is a defaut response. This is a defaut response. This is a defaut response. This is a defaut response. This is a defaut response. This is a defaut response. This is a defaut response.";
+    String response = getChatGptResponse(prompt);
+    println("Sanitized JSON:\n" + response);
+
+  try {
+    JSONObject json = parseJSONObject(response);
+    if (json == null) throw new Exception("Invalid JSON");
+
+    // --- Create text message from summary ---
+    String summary = json.getString("summary");
+    chat.add(new TextMessage(summary, false));
+
+    // --- Create chart message from metrics + values ---
+    JSONArray mArr = json.getJSONArray("metrics");
+    JSONArray vArr = json.getJSONArray("values");
+
+    String[] metrics = new String[mArr.size()];
+    float[] values = new float[vArr.size()];
+
+    for (int i = 0; i < mArr.size(); i++) {
+      metrics[i] = mArr.getString(i);
+      values[i] = vArr.getFloat(i);
+    }
+
+    chat.add(new VisualMessage(metrics, values));
+
+  } catch (Exception e) {
+    println("Error reading JSON: " + e);
+    chat.add(new ErrorMessage("⚠️ Could not parse AI response."));
+  }
+  
+    // === Example: Generate radar visualization after response ===
+    //String[] metrics = {"Tone", "Emotion", "Symbolism", "Clarity", "Depth"};
+    //String[] metrics = {"Symbolism", "Cognitive Reflection", "Emotional Weight", "Tone Ambiguity", "Inner Dialog", "Healing/Acceptance", "Spiritual Metaphor"};
+    //float[] values = {0.6, 0.4, 0.3, 0.8, 0.5, 0.7, 0.9};
+    
+    //chat.add(new VisualMessage(metrics, values));
+
+    // POLYMORPHISM: Switch back to normal orb
+    switchOrb("normal");
+
+    // Auto-save
+    storage.saveChat(chat);
+
+    clear();
+  }
+}
+
+// ========================================
+// SETUP AND DRAW
+// ========================================
+// ========================================
+// RADAR CHART VISUALIZATION
+// ========================================
+
+// ========================================
+// REFINED RADAR CHART CLASS
+// ========================================
+class RadarChart {
+  float x, y, size;
+  String[] labels;
+  float[] values;
+  color fillColor;
+  int gridLevels = 5;
+
+  RadarChart(float x, float y, float size, String[] labels, float[] values) {
+    this.x = x;
+    this.y = y;
+    this.size = size;
+    this.labels = labels;
+    this.values = values;
+    this.fillColor = color(140, 180, 255, 100);
+  }
+
+  void display() {
+    pushMatrix();
+    translate(x, y);
+    stroke(150);
+    noFill();
+
+    int n = labels.length;
+    float angleStep = TWO_PI / n;
+    float radius = size * 0.42;
+
+    // === Draw grid rings ===
+    stroke(180);
+    strokeWeight(1);
+    for (int r = 1; r <= gridLevels; r++) {
+      beginShape();
+      float levelRadius = radius * (r / float(gridLevels));
+      for (int i = 0; i < n; i++) {
+        float a = -HALF_PI + angleStep * i;
+        vertex(cos(a) * levelRadius, sin(a) * levelRadius);
+      }
+      endShape(CLOSE);
+    }
+
+    // === Draw axes ===
+    stroke(180);
+    for (int i = 0; i < n; i++) {
+      float a = -HALF_PI + angleStep * i;
+      line(0, 0, cos(a) * radius, sin(a) * radius);
+    }
+
+    // === Draw filled data polygon ===
+    noStroke();
+    fill(fillColor);
+    beginShape();
+    for (int i = 0; i < n; i++) {
+      float a = -HALF_PI + angleStep * i;
+      float r = radius * constrain(values[i], 0, 1);
+      vertex(cos(a) * r, sin(a) * r);
+    }
+    endShape(CLOSE);
+
+   // === Draw label text ===
+textSize(13);
+fill(40);
+noStroke();
+
+float baseOffset = radius * 1.15; // base distance from center
+
+for (int i = 0; i < n; i++) {
+  float a = -HALF_PI + angleStep * i;
+
+  // --- Compute base text position ---
+  float tx = cos(a) * baseOffset;
+  float ty = sin(a) * baseOffset;
+
+  // --- Adjust alignment and fine-tune offsets by quadrant ---
+  float dx = 0;
+  float dy = 0;
+  int alignX = CENTER;
+  int alignY = CENTER;
+
+  // Right side (0°)
+  if (a > -QUARTER_PI && a < QUARTER_PI) {
+    alignX = LEFT;
+    dx = 0;
+  }
+  // Upper right (45°–90°)
+  else if (a >= QUARTER_PI && a < HALF_PI + QUARTER_PI) {
+    alignX = LEFT;
+    dy = 10;
+    dx = -35;
+  }
+  // Bottom right (270°–315°)
+  else if (a < -HALF_PI + QUARTER_PI && a > -PI) {
+    alignX = LEFT;
+    dy = -10;
+    dx = -30;
+  }
+  // Left side (180°)
+  else if (a > PI/2 && a < PI + QUARTER_PI) {
+    alignX = RIGHT;
+    dx = 0;
+  }
+
+  // --- Apply alignment ---
+  textAlign(alignX, alignY);
+
+  // --- Draw label ---
+  text(labels[i], tx + dx, ty + dy);
+}
+
+
+    popMatrix();
+  }
+}
+
+
+void setup() {
+  size(800, 800);
+  smooth();
+  apiKey = loadStrings("key.txt")[0].trim(); // Add your API key here for OpenProcessing
+
+  // Initialize ArrayLists
+  uiComponents = new ArrayList();
+  chat = new ArrayList();
+
+  // POLYMORPHISM: Initialize with base Orb
+  currentOrb = new Orb(width/2, height/2 - 100, 200);
+  uiComponents.add(currentOrb);
+
+  input = new InputField(width/2 - 310, height - 120, 450, 50);
+  
+  // Initialize storage
+  storage = new ChatStorage();
+
+  // Load previous chat (if available)
+  ArrayList loaded = storage.loadChat();
+  if (loaded.size() > 0) {
+    chat = loaded;
+  }
+}
+
+void draw() {
+  drawGradientBackground();
+
+  // POLYMORPHISM: Update and display all UI components
+  for (int i = 0; i < uiComponents.size(); i++) {
+    UIComponent component = (UIComponent)uiComponents.get(i);
+    component.update();
+    component.display();
+  }
+
+  drawMessageBlocks();
+  input.display();
+  //if (radar != null) {
+  //  radar.display();
+  //}
+}
+
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
+
+void drawGradientBackground() {
+  for (int y = 0; y < height; y++) {
+    float gradient = map(y, 0, height, 0, 1);
+    color color1 = color(236, 232, 255);
+    color color2 = color(190, 224, 255);
+    stroke(lerpColor(color1, color2, gradient));
+    line(0, y, width, y);
+  }
+}
+
+ArrayList wrapText(String text, float maxWidth) {
+  String[] words = splitTokens(text, " ");
+  ArrayList lines = new ArrayList();
+  String currentLine = "";
+
+  for (int i = 0; i < words.length; i++) {
+    String word = words[i];
+    String testLine = currentLine.equals("") ? word : currentLine + " " + word;
+    if (textWidth(testLine) > maxWidth) {
+      lines.add(currentLine);
+      currentLine = word;
+    } else {
+      currentLine = testLine;
+    }
+  }
+
+  if (!currentLine.equals("")) lines.add(currentLine);
+  return lines;
+}
+
+void drawMessageBlocks() {
+  float y = height/2 - 120;
+  float maxBubbleWidth = width * 0.45;
+
+  // Show last 5 messages
+  int visibleMessages = min(chat.size(), 5);
+  int startIndex = max(0, chat.size() - visibleMessages);
+
+  for (int i = startIndex; i < chat.size(); i++) {
+    Message message = (Message)chat.get(i);
+    // POLYMORPHISM: Each message type renders itself differently
+    float messageHeight = message.render(width/2 - maxBubbleWidth - 50, y, maxBubbleWidth);
+    y += messageHeight;
+  }
+}
+
+// POLYMORPHISM: Switch between different orb types
+void switchOrb(String type) {
+  uiComponents.remove(currentOrb);
+
+  float orbX = width/2;
+  float orbY = height/2 - 100;
+  float orbR = 200;
+
+  if (type.equals("pulsing")) {
+    currentOrb = new PulsingOrb(orbX, orbY, orbR);
+  } else if (type.equals("thinking")) {
+    currentOrb = new ThinkingOrb(orbX, orbY, orbR);
+  } else {
+    currentOrb = new Orb(orbX, orbY, orbR);
+  }
+
+  uiComponents.add(currentOrb);
+}
+
+// Handle special commands
+void handleCommand(String cmd) {
+  String[] parts = split(cmd, " ");
+  String command = parts[0].toLowerCase();
+
+  if (command.equals("/help")) {
+    chat.add(new SystemMessage("Available commands:"));
+    chat.add(new TextMessage("/save - Save chat\n/export - Export to console\n/clear - Clear chat\n/orb [normal|pulsing|thinking]", false));
+  } else if (command.equals("/save")) {
+    storage.saveChat(chat);
+    chat.add(new SystemMessage("Chat saved!"));
+  } else if (command.equals("/export")) {
+    storage.exportAsText(chat);
+    chat.add(new SystemMessage("Chat exported to console!"));
+  } else if (command.equals("/clear")) {
+    clearAll();
+  } else if (command.equals("/orb")) {
+    if (parts.length > 1) {
+      switchOrb(parts[1]);
+      chat.add(new SystemMessage("Switched to " + parts[1] + " orb"));
+    } else {
+      chat.add(new ErrorMessage("Usage: /orb [normal|pulsing|thinking]"));
+    }
+  } else {
+    chat.add(new ErrorMessage("Unknown command: " + command));
+  }
+}
+
+// A function where we make the API call using the HTTP request library
+String getChatGptResponse(String prompt) {
+  // === Construct the request body ===
+  JSONObject requestBody = new JSONObject();
+
+  // Messages array
+  JSONArray messages = new JSONArray();
+  JSONObject message = new JSONObject();
+  message.setString("role", "user");
+  message.setString("content", prompt);
+  messages.append(message);
+
+  // Model and messages
+  requestBody.setString("model", "gpt-4o-mini");
+  requestBody.setJSONArray("messages", messages);
+
+  // === Send HTTP POST Request ===
+  PostRequest request = new PostRequest(endpoint);
+  request.addHeader("Authorization", "Bearer " + apiKey);
+  request.addHeader("Content-Type", "application/json");
+  request.addData(requestBody.toString());  // JSON body
+
+  request.send();
+
+  // === Get and parse response ===
+  String responseText = request.getContent();
+  println("Raw API Response:\n" + responseText);  // debug
+
+  return parseGPTResponse(responseText);
+}
+ 
+
+// Processing the JSON response from ChatGPT  
+String parseGPTResponse(String responseBody) {
+  if (responseBody == null || responseBody.length() == 0) {
+    return "{}";
+  }
+
+  try {
+    JSONObject json = parseJSONObject(responseBody);
+    if (json == null) return "{}";
+
+    if (json.hasKey("choices")) {
+      JSONObject choice = json.getJSONArray("choices").getJSONObject(0);
+      JSONObject message = choice.getJSONObject("message");
+      String content = message.getString("content").trim();
+
+      // Extract only JSON part
+      int start = content.indexOf('{');
+      int end = content.lastIndexOf('}');
+      if (start != -1 && end != -1) {
+        content = content.substring(start, end + 1);
+      }
+
+      return content;
+    }
+
+    if (json.hasKey("error")) {
+      JSONObject err = json.getJSONObject("error");
+      println("API error: " + err.getString("message"));
+      return "{\"summary\":\"Error: " + err.getString("message") + "\",\"metrics\":[],\"values\":[]}";
+    }
+
+    return "{}";
+  } catch (Exception e) {
+    println("Error parsing GPT response: " + e);
+    return "{}";
+  }
+}
+
+
+void clearAll(){
+  chat.clear();
+  chat.add(new SystemMessage("Chat cleared"));
+}
+
+void saveChat() {
+  storage.saveChat(chat);
+  chat.add(new SystemMessage("Chat saved to browser storage!"));
+}
+
+void loadChatUI() {
+  ArrayList loaded = storage.loadChat();
+  if (loaded.size() > 0) {
+    chat = loaded;
+    chat.add(new SystemMessage("Chat loaded!"));
+  } else {
+    chat.add(new SystemMessage("No saved chat found"));
+  }
+}
+
+// ========================================
+// EVENT ROUTING
+// ========================================
+
+void mouseClicked() {
+  input.mouseClicked();
+}
+
+void keyTyped() {
+  input.keyTyped();
+}
+
+void keyPressed() {
+  input.keyPressed();
+}
